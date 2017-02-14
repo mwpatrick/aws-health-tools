@@ -18,54 +18,110 @@ exports.handler = (event, context, callback) => {
     var ec2 = new AWS.EC2();
 	var clb = new AWS.ELB();
 	var alb = new AWS.ELBv2();
-	console.log ('End of object creation');
 	
-	// For each ELB, determine subnets
-	// add subnets to array	
-	var subnets = [];
 	console.log ('BEFORE var entities');
     var affectedEntities = event.detail.affectedEntities;
 	console.log ('AFTER var entities');
 	console.log ('Event contains %s load balancers; determining associated subnets', affectedEntities.length);
 
 	
-    for ( var i=0; i < affectedEntities.length; i+=1 )
+	// The event could have Classic Load Balancers and Application Load Balancers
+	// There is not presently a way to determine from the event which type it 
+	// references so we will check for Classic and then Application.
+    var promises = [];
+	for ( var i=0; i < affectedEntities.length; i+=1 )
     {
         var elbName = affectedEntities[i].entityValue;
-		if (elbName == "Testing") {
-			// determine subnets for ALB
+		if (elbName.startsWith("app/"))
+		{
+			console.log("Making ALB promise for ",elbName);
+			var elbArn = affectedEntities[i].entityArn;
+			promises.push(alb.describeLoadBalancers({
+				LoadBalancerArns: [elbArn]
+			}).promise());
+			
 		} else {
-			// determine subnets for ELB
+			console.log("Making CLB promise for ",elbName);
+			promises.push(clb.describeLoadBalancers({
+				LoadBalancerNames: [elbName]
+			}).promise());
 		}
     }
 	
-	// build API call filter for subnets
-	if (subnets.length > 0)
-	{
-		var params = {
-			Filters: [
-					{Name: 'status',Values: ['available']},
-					{Name: 'subnet-id',Values: [subnets.join(",")]}
-			]
-		};
-
-		// query API to get available ENIs in the subnets
-		// walk the result, deleting available ENIs
-		console.log ('Getting the list of available ENI in the subnets %s', subnets);
-		ec2.describeNetworkInterfaces(params, function(err, data) {
-			if (err) console.log( region, err, err.stack); // an error occurred
-			else 
+	console.log("promises ", promises);
+	
+	// Once all the async calls are done, we need to populate the list of subnets
+	// For each ELB, determine subnets
+	// add subnets to array	
+	var subnets = [];
+	Promise.all(promises).then(function(values) {
+			for ( var i=0; i < values.length; i+=1)
 			{
-				console.log("Found %s available ENI",data.NetworkInterfaces.length); // successful response
-				// for each interface, remove it
-				for ( var i=0; i < data.NetworkInterfaces.length; i+=1) deleteNetworkInterface(data.NetworkInterfaces[i], region);
+				// CLB and ALB provide different outputs from the searches
+				var subnet;
+				if (values[i].LoadBalancerDescriptions)
+				{
+					console.log("LBName: ", values[i].LoadBalancerDescriptions[0].LoadBalancerName);
+					console.log("Subnets: ", values[i].LoadBalancerDescriptions[0].Subnets);
+					for (var j=0; j < values[i].LoadBalancerDescriptions[0].Subnets.length; j+=1)
+					{
+						subnet = values[i].LoadBalancerDescriptions[0].Subnets[j];
+						console.log("clb subnet", subnet);
+						console.log("subnets", subnets);
+						if (subnets.indexOf(subnet) === -1)
+						{
+							console.log("Adding %s to subnets array", subnet);
+							subnets.push(subnet);
+						}
+					}
+				} else {
+					console.log("LBName: ", values[i].LoadBalancers[0].LoadBalancerName);
+					console.log("Subnets: ", values[i].LoadBalancers[0].AvailabilityZones ); 	
+					for (j=0; j < values[i].LoadBalancers[0].AvailabilityZones.length; j+=1)
+					{
+						subnet = values[i].LoadBalancers[0].AvailabilityZones[j].SubnetId;
+						console.log("alb subnet", subnet);
+						console.log("subnets", subnets);
+						if (subnets.indexOf(subnet) === -1)
+						{
+							console.log("Adding %s to subnets array", subnet);
+							subnets.push(subnet);
+						}
+					}
+				}
 			}
-		});
-	}
-	else
-	{
-		console.log("No subnets were found - did the event actually have ELBs?");
-	}
+			
+			// build API call filter for available ENIs in the right subnets
+			if (subnets.length > 0)
+			{
+				var params = {
+					Filters: [
+							{Name: 'status',Values: ['available']},
+							{Name: 'subnet-id',Values: subnets}
+					]
+				};
+
+				// query API to get available ENIs in the subnets
+				// walk the result, deleting available ENIs
+				console.log ('Getting the list of available ENI in the subnets %s', subnets);
+				ec2.describeNetworkInterfaces(params, function(err, data) {
+					if (err) console.log( region, err, err.stack); // an error occurred
+					else 
+					{
+						console.log("Found %s available ENI",data.NetworkInterfaces.length); // successful response
+						// for each interface, remove it
+//						for ( var i=0; i < data.NetworkInterfaces.length; i+=1) deleteNetworkInterface(data.NetworkInterfaces[i], region);
+					}
+				});
+			}
+			else
+			{
+				console.log("No subnets were found - did the event actually have ELBs?");
+			}
+		}
+	).catch(function(err) {
+		console.log(err);
+	});
 	
     callback(null, awsHealthSuccessMessage); //return success
 };
@@ -73,9 +129,7 @@ exports.handler = (event, context, callback) => {
 //This function removes an available (unattached) ENI
 //Take an instance description as argument so we can verify attachment status
 function deleteNetworkInterface (networkInterface, region) {
-    AWS.config.update({region: region});
     var ec2 = new AWS.EC2();
-	
 	if (networkInterface.Status == "available") {
 		console.log ('Attempting to delete the following ENI: %s', networkInterface.NetworkInterfaceId);
 		var deleteNetworkInterfaceParams = {
