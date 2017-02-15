@@ -18,10 +18,8 @@ exports.handler = (event, context, callback) => {
     var ec2 = new AWS.EC2();
 	var clb = new AWS.ELB();
 	var alb = new AWS.ELBv2();
-	
-	console.log ('BEFORE var entities');
+
     var affectedEntities = event.detail.affectedEntities;
-	console.log ('AFTER var entities');
 	console.log ('Event contains %s load balancers; determining associated subnets', affectedEntities.length);
 
 	
@@ -48,8 +46,6 @@ exports.handler = (event, context, callback) => {
 		}
     }
 	
-	console.log("promises ", promises);
-	
 	// Once all the async calls are done, we need to populate the list of subnets
 	// For each ELB, determine subnets
 	// add subnets to array	
@@ -66,8 +62,6 @@ exports.handler = (event, context, callback) => {
 					for (var j=0; j < values[i].LoadBalancerDescriptions[0].Subnets.length; j+=1)
 					{
 						subnet = values[i].LoadBalancerDescriptions[0].Subnets[j];
-						console.log("clb subnet", subnet);
-						console.log("subnets", subnets);
 						if (subnets.indexOf(subnet) === -1)
 						{
 							console.log("Adding %s to subnets array", subnet);
@@ -80,8 +74,6 @@ exports.handler = (event, context, callback) => {
 					for (j=0; j < values[i].LoadBalancers[0].AvailabilityZones.length; j+=1)
 					{
 						subnet = values[i].LoadBalancers[0].AvailabilityZones[j].SubnetId;
-						console.log("alb subnet", subnet);
-						console.log("subnets", subnets);
 						if (subnets.indexOf(subnet) === -1)
 						{
 							console.log("Adding %s to subnets array", subnet);
@@ -110,7 +102,7 @@ exports.handler = (event, context, callback) => {
 					{
 						console.log("Found %s available ENI",data.NetworkInterfaces.length); // successful response
 						// for each interface, remove it
-//						for ( var i=0; i < data.NetworkInterfaces.length; i+=1) deleteNetworkInterface(data.NetworkInterfaces[i], region);
+						for ( var i=0; i < data.NetworkInterfaces.length; i+=1) deleteNetworkInterface(data.NetworkInterfaces[i], region);
 					}
 				});
 			}
