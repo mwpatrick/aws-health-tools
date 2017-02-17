@@ -1,0 +1,288 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Automatically delete unused ENIs that are blocking ELB scaling using Amazon Cloudwatch events and AWS Lambda",
+    "Metadata": {
+        "LICENSE": "Copyright 2016 Amazon Web Services, Inc. or its affiliates. All Rights Reserved. This file is licensed to you under the AWS Customer Agreement (the \"License\"). You may not use this file except in compliance with the License. A copy of the License is located at http://aws.amazon.com/agreement/ . This file is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions and limitations under the License.",
+        "AWS::CloudFormation::Interface": {
+            "ParameterGroups": [
+                {
+                    "Label": {
+                        "default": "General Configuration"
+                    },
+                    "Parameters": [
+                        "DryRun"
+                    ]
+                }
+            ],
+            "ParameterLabels": {
+                "DryRun": {
+                    "default": "Dry Run"
+                }
+            }
+        }
+    },
+    "Parameters": {
+        "DryRun": {
+            "Description": "Set to true to test function without actually deleting ENIs",
+            "Type": "String",
+            "Default": "true"
+        }
+    },
+    "Resources": {
+        "LambdaIAMRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "lambda.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "AELBInsufficientIPs",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Sid": "LambdaLogging",
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "logs:CreateLogGroup",
+                                        "logs:CreateLogStream",
+                                        "logs:PutLogEvents"
+                                    ],
+                                    "Resource": [
+                                        "arn:aws:logs:*:*:*"
+                                    ]
+                                },
+                                {
+                                    "Sid": "ELBAndENI",
+                                    "Action": [
+									    "ec2:DescribeNetworkInterfaces",
+										"ec2:DeleteNetworkInterface",
+										"elasticloadbalancing:DescribeLoadBalancers"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": "*"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "LambdaFunction": {
+            "Properties": {
+                "Code": {
+                    "ZipFile": {
+                        "Fn::Join": [
+                            "\n",
+                            [
+								"// Sample Lambda Function to remove unattached ENIs in the subnets of the ELB when AWS Health AWS_ELASTICLOADBALANCING_INSUFFICIENT_IPS_IN_SUBNET events are generated.", 
+								"'use strict';",
+								"var AWS = require('aws-sdk');",
+								"const dryRun = process.env.DRY_RUN || 'true';",
+								"",
+								"//main function which gets AWS Health data from Cloudwatch event",
+								"exports.handler = (event, context, callback) => {",
+								"	var eventName = event.detail.eventTypeCode;",
+								"	var region = event.region;",
+								"	const awsHealthSuccessMessage = `Successfully got details from AWS Health event, ${eventName} and executed automated action.`;",
+								"",
+								"	AWS.config.update({region: region});",
+								"	var ec2 = new AWS.EC2();",
+								"	var clb = new AWS.ELB();",
+								"	var alb = new AWS.ELBv2();",
+								"",
+								"	var affectedEntities = event.detail.affectedEntities;",
+								"	console.log ('Event contains %s load balancers; determining associated subnets', affectedEntities.length);",
+								"",
+								"	// The event could have Classic Load Balancers and Application Load Balancers",
+								"	var promises = [];",
+								"	for ( var i=0; i < affectedEntities.length; i+=1 )",
+								"	{",
+								"		var elbName = affectedEntities[i].entityValue;",
+								"		if (elbName.startsWith('app/'))",
+								"		{",
+								"			console.log('Making ALB promise for ',elbName);",
+								"			var elbArn = affectedEntities[i].entityArn;",
+								"			promises.push(alb.describeLoadBalancers({",
+								"				LoadBalancerArns: [elbArn]",
+								"			}).promise());",
+								"",			
+								"		} else {",
+								"			console.log('Making CLB promise for ',elbName);",
+								"			promises.push(clb.describeLoadBalancers({",
+								"				LoadBalancerNames: [elbName]",
+								"			}).promise());",
+								"		}",
+								"	}",
+								"",	
+								"	var subnets = [];",
+								"	Promise.all(promises).then(function(values) {",
+								"			for ( var i=0; i < values.length; i+=1)",
+								"			{",
+								"				var subnet;",
+								"				if (values[i].LoadBalancerDescriptions)",
+								"				{",
+								"					for (var j=0; j < values[i].LoadBalancerDescriptions[0].Subnets.length; j+=1)",
+								"					{",
+								"						subnet = values[i].LoadBalancerDescriptions[0].Subnets[j];",
+								"						if (subnets.indexOf(subnet) === -1)	subnets.push(subnet);",
+								"					}",
+								"				} else {",
+								"					for (j=0; j < values[i].LoadBalancers[0].AvailabilityZones.length; j+=1)",
+								"					{",
+								"						subnet = values[i].LoadBalancers[0].AvailabilityZones[j].SubnetId;",
+								"						if (subnets.indexOf(subnet) === -1)	subnets.push(subnet);",
+								"					}",
+								"				}",
+								"			}",
+								"",			
+								"			if (subnets.length > 0)",
+								"			{",
+								"				var params = {",
+								"					Filters: [",
+								"							{Name: 'status',Values: ['available']},",
+								"							{Name: 'subnet-id',Values: subnets}",
+								"					]",
+								"				};",
+								"",
+								"				console.log ('Getting the list of available ENI in the subnets %s', subnets);",
+								"				ec2.describeNetworkInterfaces(params, function(err, data) {",
+								"					if (err) console.log( region, err, err.stack);",
+								"					else ",
+								"					{",
+								"						var len = data.NetworkInterfaces.length;",
+								"						console.log('Found %s available ENI',len);",
+								"						if (dryRun == 'true')",
+								"						{",
+								"							console.log('Dry run is true - not doing deletions');							",
+								"						} else {",
+								"							console.log('No dry run - considering deletions');",
+								"							for ( var i=0; i < len; i+=1) { ",
+								"								deleteNetworkInterface(data.NetworkInterfaces[i]); ",
+								"							}",
+								"						}",
+								"					}",
+								"				});",
+								"			}",
+								"			else",
+								"			{",
+								"				console.log('No subnets were found - did the event actually have ELBs?');",
+								"			}",
+								"		}",
+								"	).catch(function(err) {",
+								"		console.log(err);",
+								"	});",
+								"",	
+								"	callback(null, awsHealthSuccessMessage);",
+								"};",
+								"",
+								"//This function removes an available (unattached) ENI",
+								"function deleteNetworkInterface (networkInterface) {",
+								"	var ec2 = new AWS.EC2();",
+								"	if (networkInterface.Status == 'available') {",
+								"		console.log ('Attempting to delete ENI: %s', networkInterface.NetworkInterfaceId);",
+								"		var deleteNetworkInterfaceParams = {",
+								"			NetworkInterfaceId: networkInterface.NetworkInterfaceId",
+								"		};",
+								"",		
+								"		ec2.deleteNetworkInterface(deleteNetworkInterfaceParams, function(err, data) {",
+								"			if (err) console.log(networkInterface.NetworkInterfaceId, err, err.stack);",
+								"			else console.log('ENI deleted: %s', networkInterface.NetworkInterfaceId);",
+								"		});",
+								"	}",
+								"	else console.log ('ENI is not in an available state: %s', networkInterface.NetworkInterfaceId);",
+								"}",
+                                ""
+                            ]
+                        ]
+                    }
+                },
+                "Description": "Delete unused ENIs in response to AWS health events",
+                "Handler": "index.handler",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "LambdaIAMRole",
+                        "Arn"
+                    ]
+                },
+                "Runtime": "nodejs4.3",
+                "Timeout": 120,
+                "Environment": {
+                    "Variables": {
+                        "DRY_RUN": {
+                            "Ref": "DryRun"
+                        }
+                    }
+                }
+            },
+            "Type": "AWS::Lambda::Function"
+        },
+        "LambdaPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Fn::GetAtt": [
+                        "LambdaFunction",
+                        "Arn"
+                    ]
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::GetAtt": [
+                        "CloudWatchEventRule",
+                        "Arn"
+                    ]
+                }
+            }
+        },
+        "CloudWatchEventRule": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "AWS_ELASTICLOADBALANCING_INSUFFICIENT_IPS_IN_SUBNET",
+                "EventPattern": {
+                    "source": [
+                        "aws.health"
+                    ],
+                    "detail-type": [
+                        "AWS Health Event"
+                    ],
+                    "detail": {
+                        "service": [
+                            "ELASTICLOADBALANCING"
+                        ],
+                        "eventTypeCategory": [
+                            "issue"
+                        ],
+                        "eventTypeCode": [
+                            "AWS_ELASTICLOADBALANCING_INSUFFICIENT_IPS_IN_SUBNET"
+                        ]
+                    }
+                },
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::GetAtt": [
+                                "LambdaFunction",
+                                "Arn"
+                            ]
+                        },
+                        "Id": "InsufficientIPsFunction"
+                    }
+                ]
+            }
+        }
+    }
+}
