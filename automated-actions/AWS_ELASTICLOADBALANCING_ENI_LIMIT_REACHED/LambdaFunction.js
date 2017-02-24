@@ -3,8 +3,8 @@
 'use strict';
 var AWS = require('aws-sdk');
 
-// Only evaluates to false if the user enters false - missing or mistyped DRY_RUN results in a dry run.
-const dryRun = (process.env.DRY_RUN == '' || process.env.DRY_RUN != 'false');
+// Protect against missing or mistyped DRY_RUN variable.
+const dryRun = (process.env.DRY_RUN != 'false');
 
 //main function which gets AWS Health data from Cloudwatch event
 exports.handler = (event, context, callback) => {
