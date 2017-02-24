@@ -2,8 +2,9 @@
 // This is useful for situations where you might have leftover ENIs that are not used and are preventing load balancer scaling
 'use strict';
 var AWS = require('aws-sdk');
-const dryRun = (process.env.DRY_RUN == 'true');
-console.log('dryRun evaluated to %s, originally from %s.}', dryRun, process.env.DRY_RUN); //DEBUG
+
+// Only evaluates to false if the user enters false - missing or mistyped DRY_RUN results in a dry run.
+const dryRun = (process.env.DRY_RUN == '' || process.env.DRY_RUN != 'false');
 
 //main function which gets AWS Health data from Cloudwatch event
 exports.handler = (event, context, callback) => {
