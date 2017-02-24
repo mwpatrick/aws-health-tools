@@ -2,7 +2,7 @@
 // This is useful for situations where you might have leftover ENIs that are not used and are preventing load balancer scaling
 'use strict';
 var AWS = require('aws-sdk');
-const dryRun = (process.env.DRY_RUN == 'true') || true;
+const dryRun = (process.env.DRY_RUN == 'true');
 console.log('dryRun evaluated to %s, originally from %s.}', dryRun, process.env.DRY_RUN); //DEBUG
 
 //main function which gets AWS Health data from Cloudwatch event
@@ -32,7 +32,11 @@ exports.handler = (event, context, callback) => {
             for ( var i=0; i < data.NetworkInterfaces.length; i+=1)
             {
                 var netId = data.NetworkInterfaces[i].NetworkInterfaceId;
-                console.log('Attempting to delete %s', netId);
+                if (dryRun) {
+                    console.log('Dry run - not going to delete %s', netId);
+                } else {
+                    console.log('Not a dry run - deleting %s', netId);
+                }
                 deleteNetworkInterface(netId);
             }
         }
