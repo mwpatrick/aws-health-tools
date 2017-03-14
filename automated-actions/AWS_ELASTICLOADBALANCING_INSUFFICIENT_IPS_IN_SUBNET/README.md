@@ -1,9 +1,21 @@
 ## AWS Health AWS_ELASTICLOADBALANCING_INSUFFICIENT_IPS_IN_SUBNET
 
 ### Description
-ELB has attempted to scale or perform maintenance on one or more Elastic Load Balancers and this operation has been impacted by a lack of available IP addresses in the subnets associated with the ELB. ELB needs available IPs to successfully do node operations. Clearing this up requires either freeing up IPs (such as by deleting unattached ENIs which are taking up IPs), terminating instances or moving the ELB to a new, more open subnet.
+An ELB has attempted to change load balancer nodes (for example, to scale) and this operation has been impacted by a lack of available IP addresses in the subnets associated with the ELB. ELB needs available IPs to successfully do node operations. Clearing this up requires either freeing up IPs (such as by deleting unattached ENIs which are taking up IPs), terminating instances or moving the ELB to a new, more open subnet. This script will search for unattached ENIs in the appropriate subnets and remove them.
+
+BE CAREFUL: This script, if so configured, will delete unattached ENIs from your environment. If you regularly leave ENIs unattached for a reason, use caution here.
 
 ### Setup and Usage
+
+#### Cloudformation Setup
+Choose **Launch Stack** to launch the template in the US East (N. Virginia) Region in your account:
+
+[![Launch AWS Health Code Elastic Load Balancing ENI Limit Reached](../../images/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=AWSHealthElasticLoadBalancingInsufficientIPs&templateURL=https://s3.amazonaws.com/aws-health-tools/Cloudformation-templates/AWSHealthElasticLoadBalancingInsufficientIPs.json)
+
+Setting the Dry Run parameter to true (the default) will keep the script from actually doing deletions. Set it to false to enable deletion.
+Setting the Max ENI parameter (default 100) to a value higher than zero will limit the number of ENIs processed. Setting it to zero will cause the script to process all of the found unattached ENIs. Care should be used here as you can end up with the API calls being throttled by EC2. The script is configured for a limited number of retry attempts and in development testing 100 was found to be a good reliable value for Max ENIs.
+
+#### Manual Setup
 You can automatically delete unattached ENIs in the ELB subnets using Amazon Cloudwatch events and AWS Lambda using the following instructions:
 
 1. Create an IAM role for the Lambda function to use. Attach the [IAM policy](IAMPolicy) to the role in the IAM console.
@@ -23,4 +35,3 @@ Note that this is a just an example of how to set up automation with AWS Health,
 
 ### License
 AWS Health Tools are licensed under the Apache 2.0 License.
-
